@@ -1,9 +1,20 @@
 import os
 import subprocess
 import sys
+import socket
+import time
 from pathlib import Path
 
 import streamlit as st
+
+def check_port_in_use(port):
+    """Check if a port is already in use"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('localhost', port))
+            return False
+    except OSError:
+        return True
 
 ROOT = Path(__file__).parent
 PROJECTS = [f"Project{i}" for i in range(1, 11)]
@@ -57,31 +68,53 @@ else:
         col1, col2 = st.columns([1, 2])
         with col1:
             if st.button(name, key=f"btn-{name}"):
-                proc = st.session_state.processes.get(name)
-                if proc is None or proc.poll() is not None:
-                    cmd = [
-                        python_cmd,
-                        "-m",
-                        "streamlit",
-                        "run",
-                        str(app_path),
-                        "--server.port",
-                        str(port),
-                        "--server.headless",
-                        "true",
-                        "--server.address",
-                        "localhost",
-                    ]
-                    env = os.environ.copy()
-                    env.setdefault("PYTHONUNBUFFERED", "1")
-                    st.session_state.processes[name] = subprocess.Popen(
-                        cmd,
-                        cwd=str(app_path.parent),
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    st.info(f"Starting {name} on port {port}…")
+                # Check if port is already in use
+                if check_port_in_use(port):
+                    st.warning(f"⚠️ Port {port} is already in use. {name} might already be running!")
+                    st.info("If the app is already running, just click the link below.")
+                else:
+                    proc = st.session_state.processes.get(name)
+                    if proc is None or proc.poll() is not None:
+                        cmd = [
+                            python_cmd,
+                            "-m",
+                            "streamlit",
+                            "run",
+                            "app.py",  # Use just app.py since we're running from the project directory
+                            "--server.port",
+                            str(port),
+                            "--server.headless",
+                            "true",
+                            "--server.address",
+                            "localhost",
+                        ]
+                        env = os.environ.copy()
+                        env.setdefault("PYTHONUNBUFFERED", "1")
+                        try:
+                            process = subprocess.Popen(
+                                cmd,
+                                cwd=str(app_path.parent),
+                                env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True
+                            )
+                            st.session_state.processes[name] = process
+                            st.success(f"✅ Successfully started {name} on port {port}")
+                            st.info("Wait a few seconds for the app to fully load, then click the link below.")
+                            
+                            # Check if process started successfully
+                            import time
+                            time.sleep(1)
+                            if process.poll() is not None:
+                                stdout, stderr = process.communicate()
+                                st.error(f"❌ {name} failed to start:")
+                                if stderr:
+                                    st.code(stderr, language="text")
+                                if stdout:
+                                    st.code(stdout, language="text")
+                        except Exception as e:
+                            st.error(f"❌ Error launching {name}: {str(e)}")
         with col2:
             url = f"http://localhost:{port}"
             st.markdown(f"[Open {name}]({url})")
