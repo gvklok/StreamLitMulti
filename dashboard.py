@@ -10,11 +10,10 @@ import streamlit as st
 def check_port_in_use(port):
     """Check if a port is already in use"""
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('localhost', port))
-            return False
-    except OSError:
-        return True
+        with socket.create_connection(('localhost', port), timeout=0.5):
+            return True  # Port is in use if we can connect
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        return False  # Port is not in use
 
 ROOT = Path(__file__).parent
 PROJECTS = [f"Project{i}" for i in range(1, 11)]
@@ -23,8 +22,10 @@ BASE_PORT = 8601  # avoid clashing with the dashboard's own port
 # Cloud mode: if APP_URLS provided in secrets, we link to deployed apps instead of spawning processes
 try:
     APP_URLS = dict(st.secrets.get("APP_URLS", {}))
+    ALLOW_SPAWN_IN_CLOUD = bool(st.secrets.get("ALLOW_SPAWN_IN_CLOUD", False))
 except Exception:
     APP_URLS = {}
+    ALLOW_SPAWN_IN_CLOUD = False
 CLOUD_MODE = bool(APP_URLS)
 
 if "processes" not in st.session_state:
@@ -33,7 +34,7 @@ if "processes" not in st.session_state:
 st.set_page_config(page_title="Apps Dashboard", page_icon="🗂️", layout="centered")
 st.title("Apps Dashboard")
 
-if CLOUD_MODE:
+if CLOUD_MODE and not ALLOW_SPAWN_IN_CLOUD:
     st.caption("Cloud mode: open deployed apps via links.")
     for name in PROJECTS:
         url = APP_URLS.get(name)
@@ -52,9 +53,12 @@ if CLOUD_MODE:
             else:
                 st.warning("URL not configured in secrets.")
     st.divider()
-    st.caption("Configure [APP_URLS] in Streamlit secrets to enable links.")
+    st.caption("Configure [APP_URLS] in Streamlit secrets to enable links, or enable ALLOW_SPAWN_IN_CLOUD to try spawning apps from the container.")
 else:
-    st.caption("Local mode: launch standalone apps on their own ports.")
+    if CLOUD_MODE:
+        st.warning("Cloud mode with spawn opt-in enabled. This may or may not work depending on host networking/policies.")
+    else:
+        st.caption("Local mode: launch standalone apps on their own ports.")
 
     python_cmd = sys.executable or "python3"
 
@@ -68,13 +72,15 @@ else:
         col1, col2 = st.columns([1, 2])
         with col1:
             if st.button(name, key=f"btn-{name}"):
-                # Check if port is already in use
-                if check_port_in_use(port):
-                    st.warning(f"⚠️ Port {port} is already in use. {name} might already be running!")
-                    st.info("If the app is already running, just click the link below.")
+                proc = st.session_state.processes.get(name)
+                if proc and proc.poll() is None and check_port_in_use(port):
+                    st.success(f"✅ {name} already running on port {port}")
                 else:
-                    proc = st.session_state.processes.get(name)
-                    if proc is None or proc.poll() is not None:
+                    # Check if port is already in use
+                    if check_port_in_use(port):
+                        st.warning(f"⚠️ Port {port} is already in use. {name} might already be running!")
+                        st.info("If the app is already running, just click the link below.")
+                    else:
                         cmd = [
                             python_cmd,
                             "-m",
@@ -86,7 +92,7 @@ else:
                             "--server.headless",
                             "true",
                             "--server.address",
-                            "localhost",
+                            "0.0.0.0",
                         ]
                         env = os.environ.copy()
                         env.setdefault("PYTHONUNBUFFERED", "1")
